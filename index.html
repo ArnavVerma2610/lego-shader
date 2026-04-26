@@ -749,6 +749,94 @@ function sampleGrid() {
 // ────────────────────────────────────────────────────────
 const ctx2d = canvas2d.getContext('2d');
 
+// Paints the lego picture at (ox, oy) within `ctx`, sized to displayW × displayH.
+// Used by both the on-screen render and the PNG export so they stay in sync.
+function paintLegoImage(ctx, ox, oy, displayW, displayH, data, cols, rows) {
+  const tileSize = displayW / cols;
+  const sepPx = tileSize * state.separation;
+  const studDiameterPx = tileSize * state.studDiameter;
+  const studRadius = studDiameterPx / 2;
+
+  ctx.fillStyle = getCssColor('--bg');
+  ctx.fillRect(ox, oy, displayW, displayH);
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const px = (y * cols + x) * 4;
+      let r = quantize(data[px], state.quantize);
+      let g = quantize(data[px + 1], state.quantize);
+      let b = quantize(data[px + 2], state.quantize);
+
+      if (state.colorNoise > 0) {
+        const n = (Math.random() - 0.5) * 2 * state.colorNoise * 255;
+        r = Math.max(0, Math.min(255, r + n));
+        g = Math.max(0, Math.min(255, g + n));
+        b = Math.max(0, Math.min(255, b + n));
+      }
+
+      const cx = ox + (x + 0.5) * tileSize;
+      const cy = oy + (y + 0.5) * tileSize;
+
+      if (state.backingTiles) {
+        const baseR = Math.round(r * 0.78);
+        const baseG = Math.round(g * 0.78);
+        const baseB = Math.round(b * 0.78);
+        const tileSide = tileSize - sepPx;
+        ctx.fillStyle = `rgb(${baseR},${baseG},${baseB})`;
+        ctx.fillRect(
+          ox + x * tileSize + sepPx / 2,
+          oy + y * tileSize + sepPx / 2,
+          tileSide, tileSide
+        );
+      }
+
+      const grad = ctx.createRadialGradient(
+        cx - studRadius * 0.35, cy - studRadius * 0.35, studRadius * 0.1,
+        cx, cy, studRadius
+      );
+      const lightR = Math.min(255, r + 35);
+      const lightG = Math.min(255, g + 35);
+      const lightB = Math.min(255, b + 35);
+      const darkR = Math.max(0, r - 25);
+      const darkG = Math.max(0, g - 25);
+      const darkB = Math.max(0, b - 25);
+      grad.addColorStop(0, `rgb(${lightR},${lightG},${lightB})`);
+      grad.addColorStop(0.7, `rgb(${r},${g},${b})`);
+      grad.addColorStop(1, `rgb(${darkR},${darkG},${darkB})`);
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, studRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (state.studHighlight && studRadius > 1.5) {
+        ctx.strokeStyle = `rgba(${lightR},${lightG},${lightB},0.6)`;
+        ctx.lineWidth = Math.max(0.5, studRadius * 0.08);
+        ctx.beginPath();
+        ctx.arc(cx, cy, studRadius - ctx.lineWidth / 2, Math.PI * 0.9, Math.PI * 1.6);
+        ctx.stroke();
+      }
+    }
+  }
+
+  if (state.gridLines && state.lineOpacity > 0.001 && sepPx >= 0.5) {
+    ctx.strokeStyle = `rgba(0, 0, 0, ${state.lineOpacity})`;
+    ctx.lineWidth = Math.max(0.5, sepPx * 0.6);
+    ctx.beginPath();
+    for (let x = 0; x <= cols; x++) {
+      const lx = ox + x * tileSize;
+      ctx.moveTo(lx, oy);
+      ctx.lineTo(lx, oy + displayH);
+    }
+    for (let y = 0; y <= rows; y++) {
+      const ly = oy + y * tileSize;
+      ctx.moveTo(ox, ly);
+      ctx.lineTo(ox + displayW, ly);
+    }
+    ctx.stroke();
+  }
+}
+
 function render2D() {
   if (!state.imageData) return;
   const { data, cols, rows } = sampleGrid();
@@ -770,11 +858,6 @@ function render2D() {
   displayW *= state.zoom;
   displayH *= state.zoom;
 
-  const tileSize = displayW / cols;
-  const sepPx = tileSize * state.separation;
-  const studDiameterPx = tileSize * state.studDiameter;
-  const studRadius = studDiameterPx / 2;
-
   canvas2d.width = Math.round(rect.width * dpr);
   canvas2d.height = Math.round(rect.height * dpr);
   canvas2d.style.width = rect.width + 'px';
@@ -787,91 +870,23 @@ function render2D() {
   const offsetX = (rect.width - displayW) / 2 + state.panX;
   const offsetY = (rect.height - displayH) / 2 + state.panY;
 
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < cols; x++) {
-      const px = (y * cols + x) * 4;
-      let r = quantize(data[px], state.quantize);
-      let g = quantize(data[px + 1], state.quantize);
-      let b = quantize(data[px + 2], state.quantize);
-
-      if (state.colorNoise > 0) {
-        const n = (Math.random() - 0.5) * 2 * state.colorNoise * 255;
-        r = Math.max(0, Math.min(255, r + n));
-        g = Math.max(0, Math.min(255, g + n));
-        b = Math.max(0, Math.min(255, b + n));
-      }
-
-      const cx = offsetX + (x + 0.5) * tileSize;
-      const cy = offsetY + (y + 0.5) * tileSize;
-
-      // 1. Backing tile (only if enabled)
-      if (state.backingTiles) {
-        const baseR = Math.round(r * 0.78);
-        const baseG = Math.round(g * 0.78);
-        const baseB = Math.round(b * 0.78);
-        const tileSide = tileSize - sepPx;
-        ctx2d.fillStyle = `rgb(${baseR},${baseG},${baseB})`;
-        ctx2d.fillRect(
-          offsetX + x * tileSize + sepPx / 2,
-          offsetY + y * tileSize + sepPx / 2,
-          tileSide, tileSide
-        );
-      }
-
-      // 2. Stud
-      const grad = ctx2d.createRadialGradient(
-        cx - studRadius * 0.35, cy - studRadius * 0.35, studRadius * 0.1,
-        cx, cy, studRadius
-      );
-      const lightR = Math.min(255, r + 35);
-      const lightG = Math.min(255, g + 35);
-      const lightB = Math.min(255, b + 35);
-      const darkR = Math.max(0, r - 25);
-      const darkG = Math.max(0, g - 25);
-      const darkB = Math.max(0, b - 25);
-      grad.addColorStop(0, `rgb(${lightR},${lightG},${lightB})`);
-      grad.addColorStop(0.7, `rgb(${r},${g},${b})`);
-      grad.addColorStop(1, `rgb(${darkR},${darkG},${darkB})`);
-
-      ctx2d.fillStyle = grad;
-      ctx2d.beginPath();
-      ctx2d.arc(cx, cy, studRadius, 0, Math.PI * 2);
-      ctx2d.fill();
-
-      // 3. Highlight ring
-      if (state.studHighlight && studRadius > 1.5) {
-        ctx2d.strokeStyle = `rgba(${lightR},${lightG},${lightB},0.6)`;
-        ctx2d.lineWidth = Math.max(0.5, studRadius * 0.08);
-        ctx2d.beginPath();
-        ctx2d.arc(cx, cy, studRadius - ctx2d.lineWidth / 2, Math.PI * 0.9, Math.PI * 1.6);
-        ctx2d.stroke();
-      }
-    }
-  }
-
-  // 4. Grid lines drawn ON TOP of everything, controlled by lineOpacity slider.
-  // These trace the seams between tiles and read like the dark gaps in real LEGO plates.
-  if (state.gridLines && state.lineOpacity > 0.001 && sepPx >= 0.5) {
-    ctx2d.strokeStyle = `rgba(0, 0, 0, ${state.lineOpacity})`;
-    ctx2d.lineWidth = Math.max(0.5, sepPx * 0.6);
-    ctx2d.beginPath();
-    // Vertical lines
-    for (let x = 0; x <= cols; x++) {
-      const lx = offsetX + x * tileSize;
-      ctx2d.moveTo(lx, offsetY);
-      ctx2d.lineTo(lx, offsetY + displayH);
-    }
-    // Horizontal lines
-    for (let y = 0; y <= rows; y++) {
-      const ly = offsetY + y * tileSize;
-      ctx2d.moveTo(offsetX, ly);
-      ctx2d.lineTo(offsetX + displayW, ly);
-    }
-    ctx2d.stroke();
-  }
+  paintLegoImage(ctx2d, offsetX, offsetY, displayW, displayH, data, cols, rows);
 
   document.getElementById('hudCount').textContent = (cols * rows).toLocaleString();
   document.getElementById('hudGrid').textContent = `${cols}×${rows}`;
+}
+
+function exportLegoImage2D() {
+  const { data, cols, rows } = sampleGrid();
+  // Aim for ~2400px on the long edge with sensible per-tile bounds.
+  const TILE_PX = Math.max(12, Math.min(60, Math.round(2400 / Math.max(cols, rows))));
+  const w = cols * TILE_PX;
+  const h = rows * TILE_PX;
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const ctx = off.getContext('2d');
+  paintLegoImage(ctx, 0, 0, w, h, data, cols, rows);
+  return off.toDataURL('image/png');
 }
 
 let render2DTimer = null;
@@ -1183,12 +1198,7 @@ bindToggle('tgBase', 'baseplate', () => { if (baseTileMesh) baseTileMesh.visible
 document.getElementById('exportBtn').addEventListener('click', () => {
   let url;
   if (state.mode === '2d') {
-    const oldDpr = window.devicePixelRatio;
-    Object.defineProperty(window, 'devicePixelRatio', { value: oldDpr * 2, configurable: true });
-    render2D();
-    url = canvas2d.toDataURL('image/png');
-    Object.defineProperty(window, 'devicePixelRatio', { value: oldDpr, configurable: true });
-    render2D();
+    url = exportLegoImage2D();
   } else {
     const oldPR = renderer.getPixelRatio();
     renderer.setPixelRatio(oldPR * 2);
