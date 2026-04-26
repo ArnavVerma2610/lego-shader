@@ -615,6 +615,11 @@ function cssColorToHex(varName) {
   return parseInt(c.replace('#', ''), 16);
 }
 
+// Mobile / touch devices need cheaper rendering: lower DPR, no per-stud
+// gradient allocs, no realtime shadows. Coarse pointer is the cleanest signal
+// for "this is a phone/tablet GPU" without UA sniffing.
+const isLowPower = matchMedia('(pointer: coarse)').matches;
+
 // ─── Mode switching ────────────────────────────────────
 function setMode(mode) {
   state.mode = mode;
@@ -729,6 +734,7 @@ function loadImageFromURL(url, revokeAfter = false) {
     offscreen.width = w; offscreen.height = h;
     offCtx.drawImage(img, 0, 0, w, h);
     state.imageData = offCtx.getImageData(0, 0, w, h);
+    invalidateSampleGrid();
     state.zoom = 1; state.panX = 0; state.panY = 0;
     if (typeof updateZoomIndicator === 'function') updateZoomIndicator();
     if (revokeAfter) URL.revokeObjectURL(url);
@@ -750,7 +756,12 @@ function quantize(c, strength) {
   return Math.round(c / step) * step;
 }
 
+let sampledGridCache = null;
+function invalidateSampleGrid() { sampledGridCache = null; }
 function sampleGrid() {
+  if (sampledGridCache && sampledGridCache.resolution === state.resolution) {
+    return sampledGridCache;
+  }
   const targetCols = state.resolution;
   const aspect = state.imageH / state.imageW;
   const targetRows = Math.max(2, Math.round(targetCols * aspect));
@@ -759,16 +770,64 @@ function sampleGrid() {
   resampleCtx.imageSmoothingEnabled = true;
   resampleCtx.imageSmoothingQuality = 'medium';
   resampleCtx.drawImage(offscreen, 0, 0, targetCols, targetRows);
-  return {
+  sampledGridCache = {
     data: resampleCtx.getImageData(0, 0, targetCols, targetRows).data,
-    cols: targetCols, rows: targetRows,
+    cols: targetCols, rows: targetRows, resolution: targetCols,
   };
+  return sampledGridCache;
 }
 
 // ────────────────────────────────────────────────────────
 // 2D MODE
 // ────────────────────────────────────────────────────────
 const ctx2d = canvas2d.getContext('2d');
+
+// Pre-baked stud stamps keyed by (bucketed RGB + highlight on/off).
+// Each stamp is a small offscreen canvas containing the gradient + highlight;
+// drawImage(stamp, ...) in the hot loop is ~10× faster than allocating a
+// CanvasGradient per stud.
+const STAMP_SIZE = 64;
+const STAMP_R = 30;
+// Stamp circle leaves a 2px transparent margin in the source canvas; scale up
+// the destination so the rendered stud matches the original studDiameter.
+const STAMP_SCALE = STAMP_SIZE / (STAMP_R * 2);
+const studStampCache = new Map();
+function clearStudStampCache() { studStampCache.clear(); }
+function getStudStamp(r, g, b, withHighlight) {
+  // Bucket to nearest 4 — visually indistinguishable, dramatic cache-hit boost.
+  const br = r & 0xFC, bg = g & 0xFC, bb = b & 0xFC;
+  const key = (withHighlight ? 1 : 0) | (br << 2) | (bg << 10) | (bb << 18);
+  let stamp = studStampCache.get(key);
+  if (stamp) return stamp;
+  if (studStampCache.size > 800) studStampCache.clear();
+  stamp = document.createElement('canvas');
+  stamp.width = stamp.height = STAMP_SIZE;
+  const sctx = stamp.getContext('2d');
+  const cx = STAMP_SIZE / 2, cy = STAMP_SIZE / 2;
+  const lr = Math.min(255, br + 35), lg = Math.min(255, bg + 35), lb = Math.min(255, bb + 35);
+  const dr = Math.max(0, br - 25), dg = Math.max(0, bg - 25), db = Math.max(0, bb - 25);
+  const grad = sctx.createRadialGradient(
+    cx - STAMP_R * 0.35, cy - STAMP_R * 0.35, STAMP_R * 0.1,
+    cx, cy, STAMP_R
+  );
+  grad.addColorStop(0, `rgb(${lr},${lg},${lb})`);
+  grad.addColorStop(0.7, `rgb(${br},${bg},${bb})`);
+  grad.addColorStop(1, `rgb(${dr},${dg},${db})`);
+  sctx.fillStyle = grad;
+  sctx.beginPath();
+  sctx.arc(cx, cy, STAMP_R, 0, Math.PI * 2);
+  sctx.fill();
+  if (withHighlight) {
+    const lw = Math.max(0.5, STAMP_R * 0.08);
+    sctx.strokeStyle = `rgba(${lr},${lg},${lb},0.6)`;
+    sctx.lineWidth = lw;
+    sctx.beginPath();
+    sctx.arc(cx, cy, STAMP_R - lw / 2, Math.PI * 0.9, Math.PI * 1.6);
+    sctx.stroke();
+  }
+  studStampCache.set(key, stamp);
+  return stamp;
+}
 
 // Paints the lego picture at (ox, oy) within `ctx`, sized to displayW × displayH.
 // Used by both the on-screen render and the PNG export so they stay in sync.
@@ -777,66 +836,47 @@ function paintLegoImage(ctx, ox, oy, displayW, displayH, data, cols, rows) {
   const sepPx = tileSize * state.separation;
   const studDiameterPx = tileSize * state.studDiameter;
   const studRadius = studDiameterPx / 2;
+  const studDiameter = studRadius * 2;
+  const useHighlight = state.studHighlight && studRadius > 1.5;
+  const noiseAmt = state.colorNoise > 0 ? state.colorNoise * 255 : 0;
+  const useBacking = state.backingTiles;
+  const tileSide = tileSize - sepPx;
 
   ctx.fillStyle = getCssColor('--bg');
   ctx.fillRect(ox, oy, displayW, displayH);
 
   for (let y = 0; y < rows; y++) {
+    const baseRowY = oy + y * tileSize;
     for (let x = 0; x < cols; x++) {
       const px = (y * cols + x) * 4;
       let r = quantize(data[px], state.quantize);
       let g = quantize(data[px + 1], state.quantize);
       let b = quantize(data[px + 2], state.quantize);
 
-      if (state.colorNoise > 0) {
-        const n = (Math.random() - 0.5) * 2 * state.colorNoise * 255;
-        r = Math.max(0, Math.min(255, r + n));
-        g = Math.max(0, Math.min(255, g + n));
-        b = Math.max(0, Math.min(255, b + n));
+      if (noiseAmt > 0) {
+        const n = (Math.random() - 0.5) * 2 * noiseAmt;
+        r = r + n; if (r < 0) r = 0; else if (r > 255) r = 255;
+        g = g + n; if (g < 0) g = 0; else if (g > 255) g = 255;
+        b = b + n; if (b < 0) b = 0; else if (b > 255) b = 255;
+        r |= 0; g |= 0; b |= 0;
       }
 
-      const cx = ox + (x + 0.5) * tileSize;
-      const cy = oy + (y + 0.5) * tileSize;
+      const baseColX = ox + x * tileSize;
 
-      if (state.backingTiles) {
-        const baseR = Math.round(r * 0.78);
-        const baseG = Math.round(g * 0.78);
-        const baseB = Math.round(b * 0.78);
-        const tileSide = tileSize - sepPx;
+      if (useBacking) {
+        const baseR = (r * 0.78) | 0;
+        const baseG = (g * 0.78) | 0;
+        const baseB = (b * 0.78) | 0;
         ctx.fillStyle = `rgb(${baseR},${baseG},${baseB})`;
-        ctx.fillRect(
-          ox + x * tileSize + sepPx / 2,
-          oy + y * tileSize + sepPx / 2,
-          tileSide, tileSide
-        );
+        ctx.fillRect(baseColX + sepPx / 2, baseRowY + sepPx / 2, tileSide, tileSide);
       }
 
-      const grad = ctx.createRadialGradient(
-        cx - studRadius * 0.35, cy - studRadius * 0.35, studRadius * 0.1,
-        cx, cy, studRadius
-      );
-      const lightR = Math.min(255, r + 35);
-      const lightG = Math.min(255, g + 35);
-      const lightB = Math.min(255, b + 35);
-      const darkR = Math.max(0, r - 25);
-      const darkG = Math.max(0, g - 25);
-      const darkB = Math.max(0, b - 25);
-      grad.addColorStop(0, `rgb(${lightR},${lightG},${lightB})`);
-      grad.addColorStop(0.7, `rgb(${r},${g},${b})`);
-      grad.addColorStop(1, `rgb(${darkR},${darkG},${darkB})`);
-
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, studRadius, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (state.studHighlight && studRadius > 1.5) {
-        ctx.strokeStyle = `rgba(${lightR},${lightG},${lightB},0.6)`;
-        ctx.lineWidth = Math.max(0.5, studRadius * 0.08);
-        ctx.beginPath();
-        ctx.arc(cx, cy, studRadius - ctx.lineWidth / 2, Math.PI * 0.9, Math.PI * 1.6);
-        ctx.stroke();
-      }
+      const cx = baseColX + tileSize * 0.5;
+      const cy = baseRowY + tileSize * 0.5;
+      const stamp = getStudStamp(r, g, b, useHighlight);
+      const drawSize = studDiameter * STAMP_SCALE;
+      const half = drawSize * 0.5;
+      ctx.drawImage(stamp, cx - half, cy - half, drawSize, drawSize);
     }
   }
 
@@ -863,7 +903,7 @@ function render2D() {
   const { data, cols, rows } = sampleGrid();
 
   const rect = main.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio, 2);
+  const dpr = Math.min(window.devicePixelRatio, isLowPower ? 1 : 2);
   const padding = 32;
   const availW = rect.width - padding * 2;
   const availH = rect.height - padding * 2;
@@ -916,13 +956,25 @@ function debouncedRender2D() {
   render2DTimer = setTimeout(render2D, 30);
 }
 
+// Coalesces multiple synchronous render requests (wheel + pan fire many per
+// frame) into one render-per-frame via rAF.
+let render2DRafQueued = false;
+function scheduleRender2D() {
+  if (render2DRafQueued) return;
+  render2DRafQueued = true;
+  requestAnimationFrame(() => {
+    render2DRafQueued = false;
+    render2D();
+  });
+}
+
 // ────────────────────────────────────────────────────────
 // 3D MODE
 // ────────────────────────────────────────────────────────
-const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: !isLowPower, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, isLowPower ? 1 : 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = !isLowPower;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setClearColor(cssColorToHex('--bg'), 1);
 
@@ -940,8 +992,8 @@ controls.maxDistance = 120;
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.castShadow = !isLowPower;
+keyLight.shadow.mapSize.set(isLowPower ? 512 : 1024, isLowPower ? 512 : 1024);
 keyLight.shadow.camera.near = 0.5;
 keyLight.shadow.camera.far = 100;
 keyLight.shadow.camera.left = -25;
@@ -1055,8 +1107,8 @@ function ensureStudMesh(count) {
   geo.setAttribute('instColor', new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3));
   geo.setAttribute('instJitter', new THREE.InstancedBufferAttribute(new Float32Array(count), 1));
   studMesh = new THREE.InstancedMesh(geo, studMaterial, count);
-  studMesh.castShadow = true;
-  studMesh.receiveShadow = true;
+  studMesh.castShadow = !isLowPower;
+  studMesh.receiveShadow = !isLowPower;
   studMesh.frustumCulled = false;
   scene.add(studMesh);
   currentStudCount = count;
@@ -1143,6 +1195,8 @@ function rebuildCurrent() {
 }
 
 let lightDirty = true;
+let needs3DRender = true;
+function requestRender3D() { needs3DRender = true; }
 function updateLightDirection() {
   const az = state.azimuth * Math.PI / 180;
   const el = state.elevation * Math.PI / 180;
@@ -1174,13 +1228,20 @@ function bindSlider(id, key, formatter, transform, rebuildOnChange) {
 
 function handleParamChange(key) {
   switch (key) {
-    case 'roughness': studUniforms.uRoughness.value = state.roughness; break;
+    case 'roughness':
+      studUniforms.uRoughness.value = state.roughness;
+      requestRender3D();
+      break;
     case 'colorNoise':
       studUniforms.uColorNoise.value = state.colorNoise;
       if (state.mode === '2d') debouncedRender2D();
+      else requestRender3D();
       break;
     case 'azimuth':
-    case 'elevation': updateLightDirection(); break;
+    case 'elevation':
+      updateLightDirection();
+      requestRender3D();
+      break;
     case 'lineOpacity':
       // Line opacity only affects 2D rendering — debounce a redraw
       if (state.mode === '2d') debouncedRender2D();
@@ -1210,11 +1271,11 @@ function bindToggle(id, key, onChange) {
 // 2D toggles
 bindToggle('tgGridLines', 'gridLines', () => { if (state.mode === '2d') debouncedRender2D(); });
 bindToggle('tgTiles', 'backingTiles', () => { if (state.mode === '2d') debouncedRender2D(); });
-bindToggle('tgHighlight', 'studHighlight', () => { if (state.mode === '2d') debouncedRender2D(); });
+bindToggle('tgHighlight', 'studHighlight', () => { clearStudStampCache(); if (state.mode === '2d') debouncedRender2D(); });
 // 3D toggles
-bindToggle('tgRealistic', 'realistic', () => { studUniforms.uRealistic.value = state.realistic; });
-bindToggle('tgRotate', 'autoRotate');
-bindToggle('tgBase', 'baseplate', () => { if (baseTileMesh) baseTileMesh.visible = state.baseplate; });
+bindToggle('tgRealistic', 'realistic', () => { studUniforms.uRealistic.value = state.realistic; requestRender3D(); });
+bindToggle('tgRotate', 'autoRotate', () => { requestRender3D(); });
+bindToggle('tgBase', 'baseplate', () => { if (baseTileMesh) baseTileMesh.visible = state.baseplate; requestRender3D(); });
 
 document.getElementById('exportBtn').addEventListener('click', () => {
   let url;
@@ -1253,6 +1314,7 @@ function applyTheme() {
   renderer.setClearColor(hex, 1);
   scene.background = new THREE.Color(hex);
   if (state.mode === '2d') render2D();
+  else requestRender3D();
 }
 themeToggle.addEventListener('click', () => {
   document.body.classList.toggle('dark');
@@ -1274,7 +1336,7 @@ main.addEventListener('wheel', e => {
     // Trackpads emit non-zero deltaX too; respect both axes.
     state.panX -= e.deltaX;
     state.panY -= e.deltaY;
-    render2D();
+    scheduleRender2D();
     return;
   }
 
@@ -1292,7 +1354,7 @@ main.addEventListener('wheel', e => {
   state.panY = my - k * (my - (cy + state.panY)) - cy;
   state.zoom = newZoom;
   updateZoomIndicator();
-  render2D();
+  scheduleRender2D();
 }, { passive: false });
 
 // ─── 2D pan (middle-mouse OR shift + left-drag) ───────
@@ -1313,7 +1375,7 @@ window.addEventListener('mousemove', e => {
   state.panX += e.clientX - panLastX;
   state.panY += e.clientY - panLastY;
   panLastX = e.clientX; panLastY = e.clientY;
-  render2D();
+  scheduleRender2D();
 });
 window.addEventListener('mouseup', () => {
   if (!panActive) return;
@@ -1332,8 +1394,8 @@ function resize3D() {
 }
 
 window.addEventListener('resize', () => {
-  if (state.mode === '2d') render2D();
-  else resize3D();
+  if (state.mode === '2d') scheduleRender2D();
+  else { resize3D(); requestRender3D(); }
 });
 
 // ─── 3D Render loop ────────────────────────────────────
@@ -1349,20 +1411,30 @@ function animate3D() {
   const dt = (now - last) / 1000;
   last = now;
 
+  let dirty = needs3DRender;
+  needs3DRender = false;
+
   if (state.autoRotate && studMesh) {
     studMesh.rotation.y += dt * 0.25;
     if (baseTileMesh) baseTileMesh.rotation.y = studMesh.rotation.y;
     lightDirty = true;
+    dirty = true;
   }
 
-  controls.update();
+  // OrbitControls.update() returns true while the camera is still moving
+  // (including damping decay after release). Use that to decide if a redraw
+  // is needed, instead of rendering every frame.
+  if (controls.update()) dirty = true;
 
   if (lightDirty) {
     lightWorld.subVectors(keyLight.position, keyLight.target.position).normalize();
     lightView.copy(lightWorld).transformDirection(camera.matrixWorldInverse);
     studUniforms.uLightDirView.value.copy(lightView);
     lightDirty = false;
+    dirty = true;
   }
+
+  if (!dirty) return;
 
   renderer.render(scene, camera);
 
