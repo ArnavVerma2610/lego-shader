@@ -18,6 +18,12 @@
     --red-soft: rgba(201, 45, 45, 0.08);
     --red-line: rgba(201, 45, 45, 0.18);
   }
+  body.dark {
+    --bg: #230505;
+    --red: #FFC5C5;
+    --red-soft: rgba(255, 197, 197, 0.08);
+    --red-line: rgba(255, 197, 197, 0.20);
+  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -29,6 +35,7 @@
     font-size: 13px;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
+    transition: background 0.18s, color 0.18s;
   }
 
   /* Display font reserved for the brand mark and section headings */
@@ -67,6 +74,44 @@
     text-transform: uppercase;
     font-stretch: 85%;
   }
+  .sidebar-brand .byline {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-top: 4px;
+  }
+  .theme-toggle {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--red);
+    background: var(--bg);
+    color: var(--red);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s, color 0.12s;
+    padding: 0;
+  }
+  .theme-toggle:hover {
+    background: var(--red);
+    color: var(--bg);
+  }
+  .theme-toggle svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+  }
+  .theme-toggle .icon-moon { display: block; }
+  .theme-toggle .icon-sun { display: none; }
+  body.dark .theme-toggle .icon-moon { display: none; }
+  body.dark .theme-toggle .icon-sun { display: block; }
 
   /* SECTION HEADINGS — numbered, display font for the label */
   .sidebar h3 {
@@ -258,12 +303,27 @@
 
   .viewport-tools {
     position: absolute;
-    top: 16px;
+    bottom: 16px;
     right: 16px;
     display: flex;
-    gap: 6px;
+    align-items: center;
+    gap: 8px;
     z-index: 10;
   }
+  .zoom-indicator {
+    background: var(--bg);
+    border: 1px solid var(--red-line);
+    color: var(--red);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    padding: 8px 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  body.panning, body.panning .main { cursor: grabbing !important; }
   .tool-btn {
     background: var(--bg);
     border: 1px solid var(--red-line);
@@ -301,7 +361,7 @@
     position: absolute;
     inset: 16px;
     border: 2px dashed var(--red);
-    background: rgba(201, 45, 45, 0.08);
+    background: var(--red-soft);
     display: none;
     align-items: center;
     justify-content: center;
@@ -326,6 +386,7 @@
   <aside class="sidebar">
     <div class="sidebar-brand">
       <div class="title">LEGO IMAGE<br/>SHADER</div>
+      <div class="byline">Made by Arnav Verma</div>
     </div>
 
     <h3><span class="num">01</span>MODE</h3>
@@ -341,10 +402,7 @@
       Or drag a file onto the canvas. If upload fails inside this preview, download the HTML and open it directly.
     </div>
 
-    <h3><span class="num">03</span>DEMO</h3>
-    <button class="pill" type="button" data-source="demo" style="width:100%;">Use demo image</button>
-
-    <h3><span class="num">04</span>PRESETS</h3>
+    <h3><span class="num">03</span>PRESETS</h3>
     <div class="pill-grid">
       <button class="pill active" type="button" data-preset="balanced">Balanced</button>
       <button class="pill" type="button" data-preset="detailed">Detailed</button>
@@ -354,7 +412,7 @@
       <button class="pill" type="button" data-preset="poster">Poster</button>
     </div>
 
-    <h3><span class="num">05</span>GRID</h3>
+    <h3><span class="num">04</span>GRID</h3>
     <div class="control">
       <div class="control-head">
         <span class="control-label">Detail level</span>
@@ -392,7 +450,7 @@
     </div>
 
     <div class="mode-only-3d">
-      <h3><span class="num">06</span>LIGHTING</h3>
+      <h3><span class="num">05</span>LIGHTING</h3>
       <div class="control">
         <div class="control-head">
           <span class="control-label">Light direction</span>
@@ -462,8 +520,13 @@
   </aside>
 
   <main class="main" id="main">
+    <button class="theme-toggle" type="button" id="themeToggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
     <div class="viewport-tools">
-      <button class="tool-btn mode-only-3d" id="resetBtn">Reset view</button>
+      <span class="zoom-indicator mode-only-2d" id="zoomIndicator">100%</span>
+      <button class="tool-btn" id="resetBtn">Reset view</button>
       <button class="tool-btn" id="exportBtn">Export PNG</button>
     </div>
     <div class="viewport-info">
@@ -501,6 +564,8 @@ const state = {
   gridLines: true, backingTiles: true, studHighlight: true,
   // 3D toggles
   realistic: true, autoRotate: false, baseplate: true,
+  // 2D viewport zoom/pan (3D zoom is handled by OrbitControls)
+  zoom: 1, panX: 0, panY: 0,
   imageData: null, imageW: 0, imageH: 0,
 };
 
@@ -519,6 +584,15 @@ const canvas2d = document.getElementById('canvas2d');
 const fileInput = document.getElementById('fileInput');
 const uploadBtn = document.getElementById('uploadBtn');
 const dragOverlay = document.getElementById('dragOverlay');
+const themeToggle = document.getElementById('themeToggle');
+
+function getCssColor(varName) {
+  return getComputedStyle(document.body).getPropertyValue(varName).trim();
+}
+function cssColorToHex(varName) {
+  const c = getCssColor(varName);
+  return parseInt(c.replace('#', ''), 16);
+}
 
 // ─── Mode switching ────────────────────────────────────
 function setMode(mode) {
@@ -533,8 +607,8 @@ function setMode(mode) {
   document.querySelectorAll('.mode-only-2d').forEach(el => {
     el.classList.toggle('hidden', mode !== '2d');
   });
-  const colorNum = mode === '3d' ? '07' : '06';
-  const dispNum = mode === '3d' ? '08' : '07';
+  const colorNum = mode === '3d' ? '06' : '05';
+  const dispNum = mode === '3d' ? '07' : '06';
   document.getElementById('colorNum').textContent = colorNum;
   document.getElementById('dispNum').textContent = dispNum;
 
@@ -579,12 +653,6 @@ window.addEventListener('drop', e => {
   e.preventDefault();
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
   if (f && f.type.startsWith('image/')) handleFile(f);
-});
-
-document.querySelectorAll('[data-source]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.source === 'demo') loadDemoImage();
-  });
 });
 
 // Presets
@@ -640,6 +708,8 @@ function loadImageFromURL(url, revokeAfter = false) {
     offscreen.width = w; offscreen.height = h;
     offCtx.drawImage(img, 0, 0, w, h);
     state.imageData = offCtx.getImageData(0, 0, w, h);
+    state.zoom = 1; state.panX = 0; state.panY = 0;
+    if (typeof updateZoomIndicator === 'function') updateZoomIndicator();
     if (revokeAfter) URL.revokeObjectURL(url);
     if (state.mode === '2d') render2D(); else rebuild3D();
   };
@@ -697,6 +767,8 @@ function render2D() {
     displayW = availW;
     displayH = displayW / imageAspect;
   }
+  displayW *= state.zoom;
+  displayH *= state.zoom;
 
   const tileSize = displayW / cols;
   const sepPx = tileSize * state.separation;
@@ -709,11 +781,11 @@ function render2D() {
   canvas2d.style.height = rect.height + 'px';
   ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  ctx2d.fillStyle = '#FFFAF0';
+  ctx2d.fillStyle = getCssColor('--bg');
   ctx2d.fillRect(0, 0, rect.width, rect.height);
 
-  const offsetX = (rect.width - displayW) / 2;
-  const offsetY = (rect.height - displayH) / 2;
+  const offsetX = (rect.width - displayW) / 2 + state.panX;
+  const offsetY = (rect.height - displayH) / 2 + state.panY;
 
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
@@ -816,10 +888,10 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.setClearColor(0xFFFAF0, 1);
+renderer.setClearColor(cssColorToHex('--bg'), 1);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xFFFAF0);
+scene.background = new THREE.Color(cssColorToHex('--bg'));
 
 const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 1000);
 camera.position.set(0, 22, 38);
@@ -1133,10 +1205,92 @@ document.getElementById('exportBtn').addEventListener('click', () => {
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
-  camera.position.set(0, 22, 38);
-  controls.target.set(0, 0, 0);
-  controls.update();
+  if (state.mode === '3d') {
+    camera.position.set(0, 22, 38);
+    controls.target.set(0, 0, 0);
+    controls.update();
+  } else {
+    state.zoom = 1; state.panX = 0; state.panY = 0;
+    updateZoomIndicator();
+    render2D();
+  }
 });
+
+// ─── Theme toggle ──────────────────────────────────────
+function applyTheme() {
+  const hex = cssColorToHex('--bg');
+  renderer.setClearColor(hex, 1);
+  scene.background = new THREE.Color(hex);
+  if (state.mode === '2d') render2D();
+}
+themeToggle.addEventListener('click', () => {
+  document.body.classList.toggle('dark');
+  applyTheme();
+});
+
+// ─── 2D scroll-wheel zoom (cursor-anchored) ───────────
+const zoomIndicator = document.getElementById('zoomIndicator');
+function updateZoomIndicator() {
+  zoomIndicator.textContent = Math.round(state.zoom * 100) + '%';
+}
+
+main.addEventListener('wheel', e => {
+  if (state.mode !== '2d') return;
+  e.preventDefault();
+
+  // Shift + wheel/trackpad = pan
+  if (e.shiftKey) {
+    // Trackpads emit non-zero deltaX too; respect both axes.
+    state.panX -= e.deltaX;
+    state.panY -= e.deltaY;
+    render2D();
+    return;
+  }
+
+  const rect = main.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const oldZoom = state.zoom;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  const newZoom = Math.max(0.5, Math.min(12, oldZoom * factor));
+  if (newZoom === oldZoom) return;
+  // Keep the image-space point under the cursor anchored.
+  const k = newZoom / oldZoom;
+  const cx = rect.width / 2, cy = rect.height / 2;
+  state.panX = mx - k * (mx - (cx + state.panX)) - cx;
+  state.panY = my - k * (my - (cy + state.panY)) - cy;
+  state.zoom = newZoom;
+  updateZoomIndicator();
+  render2D();
+}, { passive: false });
+
+// ─── 2D pan (middle-mouse OR shift + left-drag) ───────
+let panActive = false;
+let panLastX = 0, panLastY = 0;
+function isPanGesture(e) {
+  return e.button === 1 || (e.button === 0 && e.shiftKey);
+}
+main.addEventListener('mousedown', e => {
+  if (state.mode !== '2d' || !isPanGesture(e)) return;
+  e.preventDefault();
+  panActive = true;
+  panLastX = e.clientX; panLastY = e.clientY;
+  document.body.classList.add('panning');
+});
+window.addEventListener('mousemove', e => {
+  if (!panActive) return;
+  state.panX += e.clientX - panLastX;
+  state.panY += e.clientY - panLastY;
+  panLastX = e.clientX; panLastY = e.clientY;
+  render2D();
+});
+window.addEventListener('mouseup', () => {
+  if (!panActive) return;
+  panActive = false;
+  document.body.classList.remove('panning');
+});
+// Suppress the middle-click autoscroll affordance inside the viewport
+main.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
 
 function resize3D() {
   const r = main.getBoundingClientRect();
